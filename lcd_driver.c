@@ -35,14 +35,15 @@ bit_set draw_pixel(struct point p_xy, struct rgb p_rgb, struct frame_buffer *fb)
     return set;
 }
 
-/*
-* 
+/*Draw square/rectangle(?) function
+* @param start_point Top left outermost pixel of the rectangle
+* @param end_point Bottom right outermost pixel of the rectangle
+* @param rgb Color of the area of the rectangle
+* @param line_width Thickness of the line
 *
-*
-*
-*
+* @
 */
-bit_set draw_square(struct point start_point, struct point end_point, struct rgb line_color) {
+bit_set draw_square(struct point start_point, struct point end_point, struct rgb line_color, uint16_t line_width) {
 
 }
 bool draw_circle(struct point center, struct rgb line_color);
