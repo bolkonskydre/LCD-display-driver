@@ -15,6 +15,12 @@ struct font dylex_cfg = {
     .width = 10,
 };
 
+ window lcd_screen = {
+    .sp = {0, 0},
+    .x_size = LCD_X_SIZE,
+    .y_size = LCD_Y_SIZE,
+    .ep = END_POINT(0, 0, LCD_X_SIZE, LCD_Y_SIZE),
+};
 
 /*--------------------------------*/
 //Firmware abstraction for LCD display
@@ -22,23 +28,28 @@ struct font dylex_cfg = {
 /*Draw pixel base function
 * @param p_xy Struct containing the coordinates for the pixel being set
 * @param rgb  Struct containing the color to be set on the frame buffer matrix
-* @param *fb  Pointer to frame_buffer object containing the data for all the pixels on the display
+* @param *win Window object containing the coordinate and frame buffer pointer
 *
-* Returns a bit_nset value when the xy coordinates go outside range
+* This function already comprehends the offset created by the window object in the screen in which the 
+* data is being displayed, so when you write text or create a vector or window, the function will automatically
+* take care of offsetting the pixels by x and y
 */
-bit_set draw_pixel(struct point p_xy, struct rgb p_rgb, struct frame_buffer *fb, struct lcd_data *lcd) {
+bit_set draw_pixel(struct point p_xy, struct rgb p_rgb, const window *win) {
 
     uint32_t p_addr;    
-    
-    if (p_xy.x >= lcd->x_size || p_xy.y >= lcd->y_size) {
+    uint32_t x_offset = win->sp.x;
+    uint32_t y_offset = win->sp.y;
+
+
+    if (p_xy.x >= win->scr->scr_x_size || p_xy.y >= win->scr->scr_x_size) {
         return bit_nset;
     };
 
-    p_addr = (uint32_t)p_xy.y * lcd->x_size + p_xy.x;
+    p_addr = (((uint32_t)p_xy.y + y_offset) * win->scr->scr_x_size) + (p_xy.x + x_offset);
 
-    fb->px[p_addr].r = p_rgb.r;
-    fb->px[p_addr].g = p_rgb.g;
-    fb->px[p_addr].b = p_rgb.b;
+    win->fb->px[p_addr].r = p_rgb.r;
+    win->fb->px[p_addr].g = p_rgb.g;
+    win->fb->px[p_addr].b = p_rgb.b;
 
     return set;
 }
@@ -52,15 +63,15 @@ bit_set draw_pixel(struct point p_xy, struct rgb p_rgb, struct frame_buffer *fb,
 *
 * 
 */
-bit_set draw_rectangle(rect outer_rect, struct rgb line_color, struct rgb bg, uint16_t line_width, struct frame_buffer *fb, bool fill) {
-    uint16_t sp_orig_x = outer_rect.sp.x;
-    uint16_t sp_orig_y = outer_rect.sp.y;
-    uint16_t ep_orig_x = outer_rect.ep.x;
-    uint16_t ep_orig_y = outer_rect.ep.y;
+bit_set draw_rectangle(rect outer_rect, struct rgb line_color, struct rgb bg, uint16_t line_width, window *win, bool fill) {
+    uint16_t sp_orig_x = outer_rect.sp.x + win->sp.x;
+    uint16_t sp_orig_y = outer_rect.sp.y + win->sp.y;
+    uint16_t ep_orig_x = outer_rect.ep.x + win->sp.x;
+    uint16_t ep_orig_y = outer_rect.ep.y + win->sp.y;
 
-    if (outer_rect.sp.x > outer_rect.ep.x || outer_rect.sp.y > outer_rect.ep.y) return bit_nset;
-    if (outer_rect.ep.x >= LCD_X_SIZE) outer_rect.ep.x = LCD_X_SIZE - 1;
-    if (outer_rect.ep.y >= LCD_Y_SIZE) outer_rect.ep.y = LCD_Y_SIZE - 1;
+    if (sp_orig_x > ep_orig_x || sp_orig_y > ep_orig_y) return bit_nset;
+    if ((outer_rect.ep.x - outer_rect.sp.x) >= win->x_size) outer_rect.ep.x = win->x_size - 1;
+    if ((outer_rect.ep.x - outer_rect.sp.y) >= win->y_size) outer_rect.ep.y = win->y_size - 1;
 
     for (uint32_t y = sp_orig_y; y < ep_orig_y; y++) {
         for (uint32_t x = sp_orig_x; x <= ep_orig_x; x++) {
@@ -68,14 +79,14 @@ bit_set draw_rectangle(rect outer_rect, struct rgb line_color, struct rgb bg, ui
             bool border = (x > outer_rect.sp.x + line_width) || (x < outer_rect.ep.x - line_width) ||
                           (y > outer_rect.sp.y + line_width) || (y < outer_rect.ep.y - line_width);
 
-            if (!fill) fb->px[y * LCD_X_SIZE + x] = border? line_color : bg;
-            if (fill) fb->px[y * LCD_X_SIZE + x] = line_color;
+            if (!fill) draw_pixel(px, border ? line_color: bg, win);
+            if (fill) draw_pixel(px, line_color, win);
         };
     };
     return set;
 };
 
-bit_set draw_char(char ascii_char, struct font *font_cfg, struct rgb text_color, struct rgb bg, struct point start, struct frame_buffer *fb) {
+bit_set draw_char(char ascii_char, struct font *font_cfg, struct rgb text_color, struct rgb bg, struct point start, struct frame_buffer *fb, window *win) {
     uint8_t target = ascii_char - ' ';
     uint32_t bwidth = ((font_cfg->width / 8) + 1) * 8;
     const uint8_t *drawchar = font_cfg->font_array[target];
@@ -86,29 +97,36 @@ bit_set draw_char(char ascii_char, struct font *font_cfg, struct rgb text_color,
             for (uint32_t x = 0; x < 8; x++) {
                 bool fill = (row >> (8 - 1 - x)) & 1;
                 struct point px = {start.x + x, start.y + y};
-                if (fill) {
-                    fb->px[(start.y + y) * LCD_X_SIZE + (start.x + x)] = text_color;
-                }
-                else fb->px[(start.y + y) * LCD_X_SIZE + (start.x + x)] = bg;
+                if (fill) 
+                    draw_pixel(px, text_color, win);
+                else draw_pixel(px, bg, win);
             }
         }
     }    
     return true;
 };
 
-bit_set write_text(char *text, uint32_t len, uint32_t line, uint32_t pos, struct font *font_cfg, struct rgb text_color, struct rgb bg, struct lcd_data *lcd, bool cr) {
-    uint32_t start_y = line * font_cfg->height;
-    uint32_t start_x = pos * font_cfg->width;
+bit_set write_text(char *text, uint32_t len, uint32_t line, uint32_t pos, struct font *font_cfg, struct rgb text_color, struct rgb bg, const window *win, bool cr) {
+    uint32_t start_y = (line * font_cfg->height);
+    uint32_t start_x = (pos * font_cfg->width);
 
     uint32_t newlnx = cr ? 0 : start_x;
 
-    uint32_t runningX;
-    uint32_t runningY;
+    uint32_t runningX = start_x;
+    uint32_t runningY = start_y;
     for (uint32_t i = 0; i <= len; i++) {
-
+        runningX = i * font_cfg->width;
+        bool newline = (win->x_size - runningX) >= font_cfg->width;
+        if (newline) {
+            runningX = newlnx;
+            runningY++;
+        }
+        struct point px = {runningX, runningY};
+        draw_char(text[i], font_cfg, text_color, bg, px, win->fb, win);
     }
 }
 
+//verify offsets generated by window object, maybe delegate offset pushing to the draw_px function, with only overflow/spill handling in the abstract functions
 
 bool draw_circle(struct point center, struct rgb line_color);
 uint32_t get_pixel(struct point p_xy, struct frame_buffer *fb);
